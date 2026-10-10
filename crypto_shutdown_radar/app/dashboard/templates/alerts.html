@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Alert History</h2>
+<table>
+  <tr><th>Sent</th><th>Entity</th><th>Event</th><th>Severity</th><th>Telegram OK</th><th>Error</th></tr>
+  {% for a in alerts %}
+  <tr>
+    <td>{{ a['sent_at'] }}</td>
+    <td>{{ a['affected_entity'] or a['coingecko_id'] }}</td>
+    <td>{{ a['event_label'] }}</td>
+    <td class="sev-{{ a['event_severity'] }}">{{ a['severity_at_send'] }}</td>
+    <td>{{ 'Yes' if a['telegram_ok'] else 'No' }}</td>
+    <td>{{ a['telegram_error'] or '' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

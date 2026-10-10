@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Source Health</h2>
+<table>
+  <tr><th>Source</th><th>Last attempt</th><th>Last success</th><th>Consecutive failures</th><th>Status</th><th>Last error</th></tr>
+  {% for s in sources %}
+  <tr>
+    <td>{{ s['source_key'] }}</td>
+    <td>{{ s['last_attempt_at'] }}</td>
+    <td>{{ s['last_success_at'] or 'never' }}</td>
+    <td>{{ s['consecutive_failures'] }}</td>
+    <td class="status-{{ s['status'] }}">{{ s['status'] }}</td>
+    <td>{{ s['last_error'] or '' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

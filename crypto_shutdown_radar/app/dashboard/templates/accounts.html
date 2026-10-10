@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Monitored X Accounts</h2>
+<p>
+  <a href="/accounts">All</a> |
+  <a href="/accounts?status=OK">OK</a> |
+  <a href="/accounts?status=DEGRADED">Degraded</a> |
+  <a href="/accounts?status=UNREACHABLE">Unreachable</a> |
+  <a href="/accounts?status=NEVER_CHECKED">Never checked</a>
+</p>
+<table>
+  <tr><th>Coin</th><th>Handle</th><th>Verification</th><th>Method</th><th>Monitor status</th><th>Last error</th></tr>
+  {% for a in accounts %}
+  <tr>
+    <td>{{ a['coin_name'] or a['coingecko_id'] }} {% if a['symbol'] %}({{ a['symbol']|upper }}){% endif %}</td>
+    <td>{% if a['handle_or_url'] %}<a href="https://x.com/{{ a['handle_or_url'] }}" target="_blank">@{{ a['handle_or_url'] }}</a>{% else %}-{% endif %}</td>
+    <td>{{ a['verification_status'] }}</td>
+    <td>{{ a['verification_method'] }}</td>
+    <td class="status-{{ a['monitor_status'] or 'UNKNOWN' }}">{{ a['monitor_status'] or 'NEVER CHECKED' }}</td>
+    <td>{{ a['last_error'] or '' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

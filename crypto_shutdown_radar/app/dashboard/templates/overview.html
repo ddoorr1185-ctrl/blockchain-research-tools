@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Overview</h2>
+<div class="cards">
+  <div class="card"><div class="num">{{ total_coins }}</div><div class="label">Monitored tokens</div></div>
+  <div class="card"><div class="num">{{ verified_accounts }}</div><div class="label">Verified X accounts</div></div>
+  <div class="card"><div class="num">{{ unverified_accounts }}</div><div class="label">Unverified mappings</div></div>
+  <div class="card"><div class="num">{{ accounts_ok }}</div><div class="label">Accounts last checked OK</div></div>
+  <div class="card"><div class="num">{{ accounts_unreachable }}</div><div class="label">Accounts unreachable</div></div>
+</div>
+<div class="cards">
+  <div class="card"><div class="num">{{ total_events }}</div><div class="label">Total detected events</div></div>
+  <div class="card"><div class="num sev-CRITICAL">{{ sev_counts.get('CRITICAL', 0) }}</div><div class="label">Critical alerts</div></div>
+  <div class="card"><div class="num sev-HIGH">{{ sev_counts.get('HIGH', 0) }}</div><div class="label">High alerts</div></div>
+  <div class="card"><div class="num sev-MEDIUM">{{ sev_counts.get('MEDIUM', 0) }}</div><div class="label">Medium alerts</div></div>
+</div>
+<h3>Last monitoring cycles</h3>
+<table>
+  <tr><th>Job</th><th>Last run</th><th>Status</th><th>Current interval (min)</th></tr>
+  <tr>
+    <td>RSS / news / announcements</td>
+    <td>{{ last_rss['last_run_at'] if last_rss else 'never' }}</td>
+    <td>{{ last_rss['last_status'] if last_rss else '-' }}</td>
+    <td>{{ last_rss['current_interval_minutes'] if last_rss else '-' }}</td>
+  </tr>
+  <tr>
+    <td>X accounts</td>
+    <td>{{ last_x['last_run_at'] if last_x else 'never' }}</td>
+    <td>{{ last_x['last_status'] if last_x else '-' }}</td>
+    <td>{{ last_x['current_interval_minutes'] if last_x else '-' }}</td>
+  </tr>
+</table>
+{% endblock %}

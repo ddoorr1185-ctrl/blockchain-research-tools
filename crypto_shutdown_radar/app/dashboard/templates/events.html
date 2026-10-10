@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Detected Shutdown Events</h2>
+<p>
+  <a href="/events">All</a> |
+  <a href="/events?severity=CRITICAL">Critical</a> |
+  <a href="/events?severity=HIGH">High</a> |
+  <a href="/events?severity=MEDIUM">Medium</a>
+</p>
+<table>
+  <tr><th>Detected</th><th>Entity</th><th>Type</th><th>Severity</th><th>Confidence</th><th>Scope</th><th>Evidence</th></tr>
+  {% for e in events %}
+  <tr>
+    <td>{{ e['detection_timestamp'] }}</td>
+    <td>{{ e['affected_entity'] or e['coingecko_id'] }}</td>
+    <td>{{ e['event_label'] }}</td>
+    <td class="sev-{{ e['severity'] }}">{{ e['severity'] }}</td>
+    <td>{{ "%.0f"|format(e['confidence']*100) }}%</td>
+    <td>{{ e['affected_scope'] }}</td>
+    <td>{{ e['evidence'][:140] }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

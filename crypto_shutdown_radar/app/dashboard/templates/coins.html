@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Monitored Cryptocurrencies</h2>
+<form method="get"><input type="text" name="q" value="{{ q }}" placeholder="search name or symbol"></form>
+<table>
+  <tr><th>Rank</th><th>Name</th><th>Symbol</th><th>Price (USD)</th><th>Market Cap</th><th>Website</th><th>Last Updated</th></tr>
+  {% for c in coins %}
+  <tr>
+    <td>{{ c['market_cap_rank'] }}</td>
+    <td>{{ c['name'] }}</td>
+    <td>{{ c['symbol'] | upper }}</td>
+    <td>{{ c['current_price'] }}</td>
+    <td>{{ c['market_cap'] }}</td>
+    <td>{% if c['website'] %}<a href="{{ c['website'] }}" target="_blank">link</a>{% else %}-{% endif %}</td>
+    <td>{{ c['last_updated'] }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

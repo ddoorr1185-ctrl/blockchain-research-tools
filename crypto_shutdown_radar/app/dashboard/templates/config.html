@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Configuration</h2>
+<ul>
+  <li>Target poll interval: {{ target_poll_minutes }} minutes (adaptive, 10-30 min)</li>
+  <li>Universe size: top {{ universe_size }} coins by market cap</li>
+  <li>Telegram configured: {{ 'Yes' if telegram_configured else 'No (set CSR_TELEGRAM_BOT_TOKEN / CSR_TELEGRAM_CHAT_ID)' }}</li>
+</ul>
+<h3>News RSS sources</h3>
+<ul>{% for s in news_sources %}<li>{{ s.name }} &mdash; <code>{{ s.url }}</code> (credibility {{ s.credibility }})</li>{% endfor %}</ul>
+<h3>Primary announcement sources</h3>
+<ul>{% for s in announcement_sources %}<li>{{ s.name }} &mdash; <code>{{ s.url }}</code> (credibility {{ s.credibility }})</li>{% endfor %}</ul>
+<p>All settings are environment variables or edits to <code>app/config.py</code> — no UI-based settings are persisted server-side beyond what the dashboard itself reads from SQLite.</p>
+{% endblock %}
