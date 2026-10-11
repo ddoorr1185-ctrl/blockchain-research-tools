@@ -39,8 +39,25 @@ CREATE TABLE IF NOT EXISTS official_accounts (
     handle_or_url TEXT NOT NULL,
     verification_status TEXT NOT NULL,   -- 'VERIFIED' | 'UNVERIFIED'
     verification_method TEXT,            -- how it was derived
-    added_at TEXT NOT NULL,
+    added_at TEXT NOT NULL,              -- first time this row was created
+    last_verified_at TEXT,               -- most recent time this mapping was re-checked
     UNIQUE(coingecko_id, platform, handle_or_url)
+);
+
+-- Non-X official sources discovered per coin (homepage, blog/RSS, GitHub,
+-- subreddit, announcement page, ...). Kept separate from official_accounts
+-- (which is X-specific and predates this table) so existing X-mapping logic
+-- is untouched. One coin can have several rows, one per source_type+url.
+CREATE TABLE IF NOT EXISTS official_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coingecko_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,           -- homepage | rss_feed | github | subreddit | announcement_page | forum
+    url TEXT NOT NULL,
+    verification_status TEXT NOT NULL,   -- VERIFIED | UNVERIFIED
+    evidence TEXT NOT NULL,              -- provenance, e.g. 'coingecko_metadata:links.repos_url.github'
+    monitorable INTEGER DEFAULT 0,       -- 1 if this URL was confirmed to be a working, pollable feed/endpoint
+    last_verified_at TEXT NOT NULL,
+    UNIQUE(coingecko_id, source_type, url)
 );
 
 -- Per-account monitoring health/state, used by the scheduler to avoid
@@ -136,6 +153,18 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn):
+    """Additive, idempotent migrations for databases created before a given
+    column/table existed (e.g. a pre-existing data/radar.db from an earlier
+    run). CREATE TABLE IF NOT EXISTS in SCHEMA already handles new tables;
+    this only needs to handle columns added to a table that already existed.
+    """
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(official_accounts)").fetchall()}
+    if "last_verified_at" not in existing_cols:
+        conn.execute("ALTER TABLE official_accounts ADD COLUMN last_verified_at TEXT")
 
 
 def now_iso() -> str:

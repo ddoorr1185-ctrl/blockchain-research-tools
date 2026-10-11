@@ -150,20 +150,69 @@ def upsert_coin(conn, market_row):
 
 
 def record_account(conn, coingecko_id, platform, handle_or_url, status, method):
+    ts = now_iso()
     conn.execute(
         """
-        INSERT INTO official_accounts (coingecko_id, platform, handle_or_url, verification_status, verification_method, added_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO official_accounts (coingecko_id, platform, handle_or_url, verification_status, verification_method, added_at, last_verified_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(coingecko_id, platform, handle_or_url) DO UPDATE SET
             verification_status=excluded.verification_status,
-            verification_method=excluded.verification_method
+            verification_method=excluded.verification_method,
+            last_verified_at=excluded.last_verified_at
         """,
-        (coingecko_id, platform, handle_or_url, status, method, now_iso()),
+        (coingecko_id, platform, handle_or_url, status, method, ts, ts),
     )
 
 
-def refresh_universe(limit: int = UNIVERSE_SIZE, fetch_details: bool = True, detail_limit: Optional[int] = None):
+def get_universe_status(conn) -> dict:
+    """Read-only snapshot of what's already cached, so callers can decide
+    whether a (slow, rate-limited) refresh is even necessary. Never makes a
+    network call.
+    """
+    total_coins = conn.execute("SELECT COUNT(*) c FROM coins WHERE is_active=1").fetchone()["c"]
+    verified = conn.execute(
+        "SELECT COUNT(*) c FROM official_accounts WHERE platform='x' AND verification_status='VERIFIED'"
+    ).fetchone()["c"]
+    unverified = conn.execute(
+        "SELECT COUNT(*) c FROM official_accounts WHERE platform='x' AND verification_status='UNVERIFIED'"
+    ).fetchone()["c"]
+    bounds = conn.execute(
+        "SELECT MIN(last_verified_at) oldest, MAX(last_verified_at) newest FROM official_accounts WHERE platform='x'"
+    ).fetchone()
+    coins_bounds = conn.execute("SELECT MIN(last_updated) oldest, MAX(last_updated) newest FROM coins").fetchone()
+    return {
+        "total_coins_cached": total_coins,
+        "x_accounts_verified": verified,
+        "x_accounts_unverified": unverified,
+        "x_mapping_oldest_verification": bounds["oldest"],
+        "x_mapping_newest_verification": bounds["newest"],
+        "coins_oldest_update": coins_bounds["oldest"],
+        "coins_newest_update": coins_bounds["newest"],
+    }
+
+
+def is_universe_cached(conn, min_coins: int = 900) -> bool:
+    """True if a usable cached universe already exists, i.e. a caller should
+    NOT trigger a full (rate-limited, ~hours-long on observed real-world
+    CoinGecko throughput) detail refresh.
+    """
+    return get_universe_status(conn)["total_coins_cached"] >= min_coins
+
+
+def refresh_universe(
+    limit: int = UNIVERSE_SIZE,
+    fetch_details: bool = True,
+    detail_limit: Optional[int] = None,
+    only_missing: bool = False,
+):
     """Full refresh cycle: markets + (optionally) per-coin account mapping.
+
+    `only_missing=True` is the incremental mode: the (expensive,
+    rate-limited) per-coin detail fetch is skipped for any coin that
+    already has an official_accounts row from a prior run, so a repeat
+    run only spends CoinGecko detail requests on coins that were never
+    checked before (e.g. newly-entered-top-1000 coins). Default is False
+    so existing callers/tests keep their current behavior unchanged.
 
     Returns a summary dict so callers/tests can assert on real outcomes
     instead of trusting silent success.
@@ -175,6 +224,7 @@ def refresh_universe(limit: int = UNIVERSE_SIZE, fetch_details: bool = True, det
         "error_pages": error_pages,
         "detail_checked": 0,
         "detail_errors": 0,
+        "detail_skipped_already_mapped": 0,
         "accounts_verified": 0,
         "accounts_unverified": 0,
     }
@@ -186,6 +236,16 @@ def refresh_universe(limit: int = UNIVERSE_SIZE, fetch_details: bool = True, det
         return summary
 
     detail_targets = coins if detail_limit is None else coins[:detail_limit]
+
+    if only_missing:
+        with get_conn() as conn:
+            already_mapped = {
+                r["coingecko_id"]
+                for r in conn.execute("SELECT DISTINCT coingecko_id FROM official_accounts WHERE platform='x'").fetchall()
+            }
+        skipped = [row for row in detail_targets if row["id"] in already_mapped]
+        detail_targets = [row for row in detail_targets if row["id"] not in already_mapped]
+        summary["detail_skipped_already_mapped"] = len(skipped)
     for row in detail_targets:
         cid = row["id"]
         detail = fetch_coin_detail(cid)

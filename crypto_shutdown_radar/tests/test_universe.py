@@ -48,3 +48,45 @@ def test_detail_fetch_failure_counted_not_silently_dropped():
         summary = universe.refresh_universe(limit=1, fetch_details=True)
     assert summary["detail_errors"] == 1
     assert summary["detail_checked"] == 0
+
+
+def test_record_account_sets_last_verified_at():
+    with get_conn() as conn:
+        universe.record_account(conn, "ts-coin", "x", "tscoin_official", "VERIFIED", "coingecko_metadata")
+        row = conn.execute("SELECT * FROM official_accounts WHERE coingecko_id='ts-coin'").fetchone()
+    assert row["last_verified_at"] is not None
+    assert row["added_at"] is not None
+
+
+def test_is_universe_cached_reflects_real_coin_count():
+    with get_conn() as conn:
+        assert universe.is_universe_cached(conn, min_coins=1) is False  # clean_tables fixture emptied coins
+        universe.upsert_coin(conn, {"id": "cache-coin", "symbol": "cc", "name": "CacheCoin",
+                                     "market_cap_rank": 1, "current_price": 1.0, "market_cap": 1.0})
+        assert universe.is_universe_cached(conn, min_coins=1) is True
+        assert universe.is_universe_cached(conn, min_coins=2) is False
+
+
+def test_only_missing_skips_already_mapped_coins_without_network_call():
+    market_rows = [
+        {"id": "already-mapped", "symbol": "am", "name": "AlreadyMapped", "market_cap_rank": 1,
+         "current_price": 1.0, "market_cap": 1.0},
+        {"id": "never-mapped", "symbol": "nm", "name": "NeverMapped", "market_cap_rank": 2,
+         "current_price": 1.0, "market_cap": 1.0},
+    ]
+    with get_conn() as conn:
+        universe.record_account(conn, "already-mapped", "x", "somehandle", "VERIFIED", "coingecko_metadata")
+
+    detail_calls = []
+
+    def fake_detail(coin_id):
+        detail_calls.append(coin_id)
+        return {"links": {"homepage": [""], "twitter_screen_name": "newhandle"}}
+
+    with patch.object(universe, "fetch_top_markets", return_value=(market_rows, [])), \
+         patch.object(universe, "fetch_coin_detail", side_effect=fake_detail):
+        summary = universe.refresh_universe(limit=2, fetch_details=True, only_missing=True)
+
+    assert detail_calls == ["never-mapped"]
+    assert summary["detail_skipped_already_mapped"] == 1
+    assert summary["detail_checked"] == 1

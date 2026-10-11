@@ -128,6 +128,25 @@ detected event in the dashboard — it just logs (and records in the
 `alerts` table) that Telegram delivery was skipped, rather than pretending
 to send anything.
 
+## Follow-up: source-coverage validation (non-X source discovery + X fallback research)
+
+After the first full run above has populated `data/radar.db` (top-1000
+universe + X-handle mapping), a second, much faster validation is
+available: `bash run_source_coverage_validation.sh`. It:
+
+- **Never re-runs the 1000-coin CoinGecko detail fetch.** It reads the
+  existing cache and fails fast with instructions if no cache is found.
+- Discovers non-X official sources (homepage, blog/RSS feed, GitHub
+  activity feed, subreddit feed) for a 100-coin sample, with every entry's
+  provenance recorded in the `official_sources` table.
+- Tests new, previously-untried free X-reading candidates (xcancel.com,
+  two additional Nitter-codebase mirrors, RSSHub's public demo instance,
+  and optionally your own self-hosted RSS-Bridge via
+  `CSR_RSSBRIDGE_BASE_URL`) against 5 well-known accounts.
+- Re-validates 10 real historical crypto shutdown/bankruptcy/wind-down
+  cases against real CoinGecko price history.
+- Targets ≤30 minutes total and writes `SOURCE_COVERAGE_VALIDATION.md`.
+
 ## Step 4 — run it
 
 ```bash
