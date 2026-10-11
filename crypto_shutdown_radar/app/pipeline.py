@@ -4,6 +4,7 @@ items found").
 """
 import hashlib
 import logging
+from typing import Optional
 
 from app.classifier import classify
 from app.db import get_conn, now_iso
@@ -26,7 +27,7 @@ def _dedup_key(item) -> str:
     return hashlib.sha256(basis.encode()).hexdigest()[:16] + f":{day}"
 
 
-def record_source_health(conn, source_key: str, ok: bool, error: str | None):
+def record_source_health(conn, source_key: str, ok: bool, error: Optional[str]):
     row = conn.execute("SELECT * FROM source_health WHERE source_key=?", (source_key,)).fetchone()
     failures = 0 if ok else (row["consecutive_failures"] + 1 if row else 1)
     status = "OK" if ok else ("DEGRADED" if failures < 3 else "UNREACHABLE")
@@ -149,7 +150,7 @@ def run_rss_cycle():
     return total_new_events
 
 
-def run_x_cycle(limit_accounts: int | None = None):
+def run_x_cycle(limit_accounts: Optional[int] = None):
     """Polls verified X accounts. Honestly reports per-account success."""
     with get_conn() as conn:
         rows = conn.execute(

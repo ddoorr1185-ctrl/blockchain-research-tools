@@ -7,6 +7,7 @@ never fabricated -- per the project's hard requirement.
 """
 import logging
 import time
+from typing import Optional
 
 import requests
 
@@ -74,7 +75,7 @@ def _unknown_snapshot():
     }
 
 
-def _fetch_exchange_symbols(exchange: str) -> set | None:
+def _fetch_exchange_symbols(exchange: str) -> Optional[set]:
     """Returns the real set of perpetual/swap symbols currently listed on
     `exchange`, or None if the endpoint could not be reached/parsed. None
     must be treated as UNKNOWN, never as "no futures available".

@@ -2,6 +2,11 @@ fastapi==0.115.0
 uvicorn==0.30.6
 jinja2==3.1.4
 requests==2.32.3
+# Pinned below 2.0: urllib3 v2 refuses full functionality (NotOpenSSLWarning,
+# and on some systems real failures) when Python is linked against LibreSSL
+# instead of OpenSSL 1.1.1+ -- this is the default for macOS's system
+# python3. urllib3 1.26.x works correctly against LibreSSL.
+urllib3<2
 feedparser==6.0.11
 apscheduler==3.10.4
 sqlalchemy==2.0.35

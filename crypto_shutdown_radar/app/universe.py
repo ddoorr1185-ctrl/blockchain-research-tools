@@ -14,6 +14,7 @@ Design notes:
 """
 import time
 import logging
+from typing import Optional
 
 import requests
 
@@ -161,7 +162,7 @@ def record_account(conn, coingecko_id, platform, handle_or_url, status, method):
     )
 
 
-def refresh_universe(limit: int = UNIVERSE_SIZE, fetch_details: bool = True, detail_limit: int | None = None):
+def refresh_universe(limit: int = UNIVERSE_SIZE, fetch_details: bool = True, detail_limit: Optional[int] = None):
     """Full refresh cycle: markets + (optionally) per-coin account mapping.
 
     Returns a summary dict so callers/tests can assert on real outcomes
