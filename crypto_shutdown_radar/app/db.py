@@ -48,6 +48,26 @@ CREATE TABLE IF NOT EXISTS official_accounts (
 -- subreddit, announcement page, ...). Kept separate from official_accounts
 -- (which is X-specific and predates this table) so existing X-mapping logic
 -- is untouched. One coin can have several rows, one per source_type+url.
+-- Caches the EXTRA CoinGecko /coins/{id} link fields (github, subreddit,
+-- announcement, forum) beyond homepage/twitter -- which are already
+-- persisted on coins.website and official_accounts respectively. This is
+-- the fix for a real bug: the original 1000-coin enrichment run already
+-- paid the CoinGecko rate-limit cost of fetching this data once, then
+-- discarded everything except homepage+twitter. Without this cache, any
+-- later step that wants github/subreddit/announcement info re-pays that
+-- same cost -- which is exactly what caused repeated 429s. One row per
+-- coin; fetch_status records whether we have real data or are still
+-- missing/deferred/erroring, so a caller never has to guess.
+CREATE TABLE IF NOT EXISTS coin_link_metadata (
+    coingecko_id TEXT PRIMARY KEY,
+    github_url TEXT,
+    subreddit_url TEXT,
+    announcement_url TEXT,
+    forum_url TEXT,
+    fetch_status TEXT NOT NULL,          -- OK | RATE_LIMITED | ERROR
+    fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS official_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     coingecko_id TEXT NOT NULL,

@@ -97,6 +97,41 @@ def fetch_top_markets(limit: int = UNIVERSE_SIZE):
     return coins[:limit], error_pages
 
 
+def get_json_no_retry(url: str, params: Optional[dict] = None):
+    """Single-attempt GET: no retry loop, no exponential backoff, and
+    crucially no Retry-After sleep on 429. Honors only the minimum
+    inter-request spacing (COINGECKO_MIN_INTERVAL_SECONDS) before firing,
+    never after a failure.
+
+    This exists because `_throttled_get`'s retry/backoff (needed for the
+    slow, one-time, ~1000-coin full universe fetch) is exactly wrong for a
+    bounded validation loop sampling N coins: a single 429 there can sleep
+    up to Retry-After (observed up to 60s) and repeat that per retry,
+    which is what made a "<=30 minute" sample loop stall for hours. Every
+    caller of this function must treat RATE_LIMITED/ERROR as "try again on
+    a later run", never as "block until it works".
+
+    Returns (status, data) where status is 'OK' | 'RATE_LIMITED' | 'ERROR'
+    and data is the parsed JSON body (only present when status == 'OK').
+    """
+    global _last_request_at
+    wait = COINGECKO_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait)
+    try:
+        resp = _session.get(url, params=params, timeout=HTTP_TIMEOUT_SECONDS)
+        _last_request_at = time.monotonic()
+    except requests.RequestException as exc:
+        log.warning("get_json_no_retry error on %s: %s", url, exc)
+        return "ERROR", None
+    if resp.status_code == 200:
+        return "OK", resp.json()
+    if resp.status_code == 429:
+        log.info("get_json_no_retry: 429 on %s -- deferring, not sleeping", url)
+        return "RATE_LIMITED", None
+    return "ERROR", None
+
+
 def fetch_coin_detail(coin_id: str):
     return _throttled_get(
         f"{COINGECKO_BASE}/coins/{coin_id}",

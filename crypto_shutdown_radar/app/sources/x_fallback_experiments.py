@@ -87,7 +87,11 @@ def _try_nitter_style_rss(base_url: str, handle: str) -> dict:
     return {"ok": True, "post_count": len(parsed.entries), "newest_ts": newest, "error": None, "url": url}
 
 
-def test_xcancel(handles: list) -> MethodResult:
+def _deadline_hit(deadline: Optional[float]) -> bool:
+    return deadline is not None and time.monotonic() > deadline
+
+
+def test_xcancel(handles: list, deadline: Optional[float] = None) -> MethodResult:
     result = MethodResult(
         method="xcancel.com (Nitter-codebase mirror)",
         requires_auth=False,
@@ -100,17 +104,21 @@ def test_xcancel(handles: list) -> MethodResult:
         ),
     )
     for handle in handles:
+        if _deadline_hit(deadline):
+            break
         result.account_results[handle] = _try_nitter_style_rss(XCANCEL_BASE, handle)
         time.sleep(1.5)
     return result
 
 
-def test_extra_nitter_mirrors(handles: list) -> dict:
+def test_extra_nitter_mirrors(handles: list, deadline: Optional[float] = None) -> dict:
     """Returns {mirror_base: MethodResult}, one per mirror, since each is a
     separately-operated instance with independent uptime.
     """
     out = {}
     for base in EXTRA_NITTER_MIRRORS:
+        if _deadline_hit(deadline):
+            break
         result = MethodResult(
             method=f"Nitter-codebase mirror: {base}",
             requires_auth=False,
@@ -119,13 +127,15 @@ def test_extra_nitter_mirrors(handles: list) -> dict:
             tos_reliability_note="Community-run Nitter instance; same legal/uptime risk as any Nitter mirror.",
         )
         for handle in handles:
+            if _deadline_hit(deadline):
+                break
             result.account_results[handle] = _try_nitter_style_rss(base, handle)
             time.sleep(1.5)
         out[base] = result
     return out
 
 
-def test_rsshub(handles: list) -> MethodResult:
+def test_rsshub(handles: list, deadline: Optional[float] = None) -> MethodResult:
     result = MethodResult(
         method="RSSHub public demo instance (rsshub.app) /twitter/user/:id route",
         requires_auth=False,
@@ -139,6 +149,8 @@ def test_rsshub(handles: list) -> MethodResult:
         ),
     )
     for handle in handles:
+        if _deadline_hit(deadline):
+            break
         url = f"{RSSHUB_BASE}/twitter/user/{handle}"
         try:
             resp = _session.get(url, timeout=HTTP_TIMEOUT_SECONDS)
@@ -166,7 +178,7 @@ def test_rsshub(handles: list) -> MethodResult:
     return result
 
 
-def test_self_hosted_rss_bridge(handles: list) -> Optional[MethodResult]:
+def test_self_hosted_rss_bridge(handles: list, deadline: Optional[float] = None) -> Optional[MethodResult]:
     base_url = os.environ.get("CSR_RSSBRIDGE_BASE_URL", "").rstrip("/")
     if not base_url:
         return None  # not configured -- do not fabricate a public instance
@@ -178,6 +190,8 @@ def test_self_hosted_rss_bridge(handles: list) -> Optional[MethodResult]:
         tos_reliability_note="Depends entirely on the operator's own deployment staying up to date against X's anti-scraping changes.",
     )
     for handle in handles:
+        if _deadline_hit(deadline):
+            break
         url = f"{base_url}/?action=display&bridge=Twitter&context=By+username&u={handle}&format=Atom"
         try:
             resp = _session.get(url, timeout=HTTP_TIMEOUT_SECONDS)
@@ -203,15 +217,21 @@ def test_self_hosted_rss_bridge(handles: list) -> Optional[MethodResult]:
     return result
 
 
-def run_all_candidates(handles: list) -> dict:
+def run_all_candidates(handles: list, deadline: Optional[float] = None) -> dict:
     """Runs every candidate method against the same small handle list and
     returns a dict keyed by method name, each value a MethodResult (or None
     for the self-hosted RSS-Bridge candidate if it isn't configured).
+
+    `deadline` (a time.monotonic() value) makes this cooperative with a
+    larger time-budgeted run: each method checks it before every per-handle
+    (or per-mirror) request and stops immediately once it has passed,
+    rather than running every remaining method/account to completion
+    regardless of how long that takes.
     """
-    out = {"xcancel": test_xcancel(handles)}
-    out.update({f"nitter_mirror:{k}": v for k, v in test_extra_nitter_mirrors(handles).items()})
-    out["rsshub"] = test_rsshub(handles)
-    rss_bridge = test_self_hosted_rss_bridge(handles)
+    out = {"xcancel": test_xcancel(handles, deadline=deadline)}
+    out.update({f"nitter_mirror:{k}": v for k, v in test_extra_nitter_mirrors(handles, deadline=deadline).items()})
+    out["rsshub"] = test_rsshub(handles, deadline=deadline)
+    rss_bridge = test_self_hosted_rss_bridge(handles, deadline=deadline)
     if rss_bridge is not None:
         out["self_hosted_rss_bridge"] = rss_bridge
     return out

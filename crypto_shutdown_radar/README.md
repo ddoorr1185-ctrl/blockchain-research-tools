@@ -145,7 +145,19 @@ available: `bash run_source_coverage_validation.sh`. It:
   `CSR_RSSBRIDGE_BASE_URL`) against 5 well-known accounts.
 - Re-validates 10 real historical crypto shutdown/bankruptcy/wind-down
   cases against real CoinGecko price history.
-- Targets ≤30 minutes total and writes `SOURCE_COVERAGE_VALIDATION.md`.
+- Enforces a **hard 30-minute wall-clock deadline** in code (not an
+  estimate): every CoinGecko call anywhere in this script goes through a
+  single-attempt fetch that never sleeps out a 429's `Retry-After` header,
+  and a phase not yet started once the deadline has passed is skipped
+  outright rather than run. Extra per-coin metadata (GitHub/subreddit/
+  announcement links) is cached in `coin_link_metadata` and fetched under
+  its own small, separate request budget; a 429 there is recorded as
+  deferred and retried on a *later* run, never blocked on. Interrupting
+  the script (Ctrl-C) or re-running it loses no completed work -- already-
+  cached coins and already-discovered sources are reused, not re-fetched.
+- Progress is printed live: `processed X/100 | direct official sources
+  found | deferred (rate-limited/error metadata) | elapsed | remaining
+  budget`.
 
 ## Step 4 — run it
 

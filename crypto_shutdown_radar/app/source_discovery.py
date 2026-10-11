@@ -16,9 +16,9 @@ from typing import Optional
 import feedparser
 import requests
 
-from app.config import HTTP_TIMEOUT_SECONDS, USER_AGENT
+from app.config import HTTP_TIMEOUT_SECONDS, USER_AGENT, COINGECKO_BASE
 from app.db import get_conn, now_iso
-from app.universe import fetch_coin_detail
+from app.universe import get_json_no_retry
 
 log = logging.getLogger("source_discovery")
 
@@ -136,107 +136,277 @@ def discover_blog_feed(homepage_url: str, homepage_html: Optional[str]):
     return None, None
 
 
-def discover_official_sources_for_coin(coingecko_id: str, cached_homepage: str = "") -> dict:
-    """Runs the full discovery pipeline for one coin and persists findings.
-    Makes network requests: 1 CoinGecko detail call (rate-limited) + up to
-    ~4 more to independent, non-CoinGecko hosts (homepage, feed candidate,
-    github, subreddit) which are NOT subject to CoinGecko's rate limit.
+def get_cached_link_metadata(conn, coingecko_id: str):
+    """Reads whatever extra CoinGecko link metadata (github/subreddit/
+    announcement) is already cached for this coin. Makes NO network call.
+    Returns the row, or None if this coin has never been enriched.
+    """
+    return conn.execute(
+        "SELECT * FROM coin_link_metadata WHERE coingecko_id=?", (coingecko_id,)
+    ).fetchone()
 
-    Returns a summary dict (also written to official_sources) for the
-    calling report to aggregate.
+
+def record_link_metadata(conn, coingecko_id, github_url, subreddit_url, announcement_url, forum_url, status):
+    conn.execute(
+        """
+        INSERT INTO coin_link_metadata (coingecko_id, github_url, subreddit_url, announcement_url, forum_url, fetch_status, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(coingecko_id) DO UPDATE SET
+            github_url=excluded.github_url,
+            subreddit_url=excluded.subreddit_url,
+            announcement_url=excluded.announcement_url,
+            forum_url=excluded.forum_url,
+            fetch_status=excluded.fetch_status,
+            fetched_at=excluded.fetched_at
+        """,
+        (coingecko_id, github_url, subreddit_url, announcement_url, forum_url, status, now_iso()),
+    )
+
+
+def enrich_missing_link_metadata(
+    coin_ids,
+    request_budget: int = 30,
+    time_budget_seconds: float = 90.0,
+    deadline: Optional[float] = None,
+) -> dict:
+    """PHASE: metadata enrichment (A). The ONLY function in this module that
+    calls CoinGecko. Strictly bounded by request count AND wall-clock time
+    (and an optional shared `deadline`, a time.monotonic() value, for
+    coordinating with an overall multi-phase budget).
+
+    Coins already cached with fetch_status='OK' are skipped entirely --
+    zero network calls for them. Every result (OK, RATE_LIMITED, or ERROR)
+    is persisted immediately via record_link_metadata, so a later run
+    resumes incrementally instead of re-attempting already-deferred coins
+    from scratch forever... except RATE_LIMITED/ERROR coins ARE retried on
+    a later call (their status isn't terminal), which is intentional: a
+    429 now doesn't mean 429 forever.
+
+    Uses get_json_no_retry: a 429 is recorded and moved past immediately,
+    never slept out. This is the fix for the real failure mode (repeated
+    60s Retry-After sleeps stalling an entire sample loop).
+    """
+    t0 = time.monotonic()
+    with get_conn() as conn:
+        already_ok = {
+            r["coingecko_id"]
+            for r in conn.execute("SELECT coingecko_id FROM coin_link_metadata WHERE fetch_status='OK'").fetchall()
+        }
+    to_try = [cid for cid in coin_ids if cid not in already_ok]
+
+    attempted = 0
+    ok_count = 0
+    rate_limited = 0
+    errors = 0
+    stopped_reason = None
+
+    for cid in to_try:
+        if attempted >= request_budget:
+            stopped_reason = "request_budget"
+            break
+        elapsed = time.monotonic() - t0
+        if elapsed > time_budget_seconds:
+            stopped_reason = "time_budget"
+            break
+        if deadline is not None and time.monotonic() > deadline:
+            stopped_reason = "global_deadline"
+            break
+
+        status, data = get_json_no_retry(
+            f"{COINGECKO_BASE}/coins/{cid}",
+            params={"localization": "false", "tickers": "false", "market_data": "false",
+                    "community_data": "false", "developer_data": "false"},
+        )
+        attempted += 1
+
+        with get_conn() as conn:
+            if status == "OK":
+                links = (data or {}).get("links", {}) or {}
+                github_urls = (links.get("repos_url") or {}).get("github") or []
+                record_link_metadata(
+                    conn, cid,
+                    github_url=github_urls[0] if github_urls else None,
+                    subreddit_url=links.get("subreddit_url") or None,
+                    announcement_url=(links.get("announcement_url") or [None])[0],
+                    forum_url=links.get("official_forum_url") or None,
+                    status="OK",
+                )
+                ok_count += 1
+            else:
+                record_link_metadata(conn, cid, None, None, None, None, status)
+                if status == "RATE_LIMITED":
+                    rate_limited += 1
+                else:
+                    errors += 1
+
+    return {
+        "coins_considered": len(coin_ids),
+        "already_cached_skipped": len(coin_ids) - len(to_try),
+        "attempted": attempted,
+        "newly_ok": ok_count,
+        "deferred_rate_limited": rate_limited,
+        "errors": errors,
+        "stopped_reason": stopped_reason,
+        "elapsed_seconds": time.monotonic() - t0,
+    }
+
+
+def discover_sources_from_cache(coingecko_id: str, cached_homepage: str = "") -> dict:
+    """PHASE: source monitoring validation (B). Makes ZERO CoinGecko calls.
+    Uses only what's already persisted: `cached_homepage` (from coins.website,
+    passed in by the caller) and whatever coin_link_metadata already holds.
+    A coin with no cached link metadata yet (never enriched, or enrichment
+    deferred due to rate limiting) gets github/subreddit/announcement
+    reported as MISSING_METADATA -- never silently skipped without saying
+    so, and never fetched inline here regardless of how long that would take.
+
+    The homepage/blog-feed/github/subreddit network calls that DO happen
+    here all go to independent, non-CoinGecko hosts and are each a single
+    attempt (see check_url_reachable/probe_feed) -- none of them retry or
+    honor a Retry-After, so none of them can stall this function either.
     """
     result = {
         "coingecko_id": coingecko_id,
         "homepage_reachable": False,
         "blog_rss_found": None,
         "github_feed_found": None,
+        "github_status": "MISSING_METADATA",
         "subreddit_feed_found": None,
-        "detail_fetch_error": False,
+        "subreddit_status": "MISSING_METADATA",
+        "announcement_page_found": None,
+        "announcement_status": "MISSING_METADATA",
     }
 
-    detail = fetch_coin_detail(coingecko_id)
-    if detail is None:
-        result["detail_fetch_error"] = True
-        return result
-    links = detail.get("links", {}) or {}
-
-    homepage = cached_homepage or (links.get("homepage") or [""])[0]
-    homepage_html = None
     with get_conn() as conn:
+        meta = get_cached_link_metadata(conn, coingecko_id)
+
+        homepage = cached_homepage or ""
+        homepage_html = None
         if homepage:
             status, body = check_url_reachable(homepage)
             if status == 200:
                 result["homepage_reachable"] = True
                 homepage_html = body
                 record_source(conn, coingecko_id, "homepage", homepage, "VERIFIED",
-                               "coingecko_metadata:links.homepage", monitorable=False)
-            elif homepage:
+                               "cached:coins.website (from prior CoinGecko enrichment)", monitorable=False)
+            else:
                 record_source(conn, coingecko_id, "homepage", homepage, "UNVERIFIED",
-                               f"coingecko_metadata:links.homepage (unreachable, HTTP/err={status})", monitorable=False)
+                               f"cached:coins.website (unreachable, HTTP/err={status})", monitorable=False)
 
-        if homepage:
             feed_url, how = discover_blog_feed(homepage, homepage_html)
             if feed_url:
                 result["blog_rss_found"] = feed_url
                 record_source(conn, coingecko_id, "rss_feed", feed_url, "VERIFIED", how, monitorable=True)
 
-        github_urls = (links.get("repos_url") or {}).get("github") or []
-        if github_urls:
-            feed_url, ok = check_github_activity_feed(github_urls[0])
-            if feed_url:
-                record_source(
-                    conn, coingecko_id, "github", feed_url,
-                    "VERIFIED" if ok else "UNVERIFIED",
-                    f"coingecko_metadata:links.repos_url.github ({github_urls[0]})",
-                    monitorable=ok,
-                )
-                if ok:
-                    result["github_feed_found"] = feed_url
+        if meta is None:
+            # Never enriched at all (not yet attempted in any run).
+            pass
+        elif meta["fetch_status"] != "OK":
+            result["github_status"] = f"DEFERRED ({meta['fetch_status']})"
+            result["subreddit_status"] = f"DEFERRED ({meta['fetch_status']})"
+            result["announcement_status"] = f"DEFERRED ({meta['fetch_status']})"
+        else:
+            if meta["github_url"]:
+                feed_url, ok = check_github_activity_feed(meta["github_url"])
+                if feed_url:
+                    record_source(
+                        conn, coingecko_id, "github", feed_url, "VERIFIED" if ok else "UNVERIFIED",
+                        f"cached_coingecko_metadata:links.repos_url.github ({meta['github_url']})", monitorable=ok,
+                    )
+                    result["github_status"] = "OK" if ok else "CHECKED_NOT_WORKING"
+                    if ok:
+                        result["github_feed_found"] = feed_url
+            else:
+                result["github_status"] = "NO_GITHUB_LINK"
 
-        subreddit_url = links.get("subreddit_url") or ""
-        if subreddit_url:
-            feed_url, ok = check_subreddit_feed(subreddit_url)
-            if feed_url:
-                record_source(
-                    conn, coingecko_id, "subreddit", feed_url,
-                    "VERIFIED" if ok else "UNVERIFIED",
-                    f"coingecko_metadata:links.subreddit_url ({subreddit_url})",
-                    monitorable=ok,
-                )
-                if ok:
-                    result["subreddit_feed_found"] = feed_url
+            if meta["subreddit_url"]:
+                feed_url, ok = check_subreddit_feed(meta["subreddit_url"])
+                if feed_url:
+                    record_source(
+                        conn, coingecko_id, "subreddit", feed_url, "VERIFIED" if ok else "UNVERIFIED",
+                        f"cached_coingecko_metadata:links.subreddit_url ({meta['subreddit_url']})", monitorable=ok,
+                    )
+                    result["subreddit_status"] = "OK" if ok else "CHECKED_NOT_WORKING"
+                    if ok:
+                        result["subreddit_feed_found"] = feed_url
+            else:
+                result["subreddit_status"] = "NO_SUBREDDIT_LINK"
 
-        announcement_url = (links.get("announcement_url") or [""])[0]
-        if announcement_url:
-            status, _ = check_url_reachable(announcement_url)
-            record_source(
-                conn, coingecko_id, "announcement_page", announcement_url,
-                "VERIFIED" if status == 200 else "UNVERIFIED",
-                "coingecko_metadata:links.announcement_url",
-                monitorable=False,
-            )
-            result["announcement_page_found"] = announcement_url if status == 200 else None
+            if meta["announcement_url"]:
+                status, _ = check_url_reachable(meta["announcement_url"])
+                record_source(
+                    conn, coingecko_id, "announcement_page", meta["announcement_url"],
+                    "VERIFIED" if status == 200 else "UNVERIFIED",
+                    "cached_coingecko_metadata:links.announcement_url", monitorable=False,
+                )
+                result["announcement_status"] = "OK" if status == 200 else "CHECKED_NOT_WORKING"
+                if status == 200:
+                    result["announcement_page_found"] = meta["announcement_url"]
+            else:
+                result["announcement_status"] = "NO_ANNOUNCEMENT_LINK"
 
     return result
 
 
-def discover_for_sample(coin_rows, time_budget_seconds: float = 480.0) -> dict:
-    """Runs discovery across a sample of coins (dicts with at least
-    coingecko_id/symbol/website) under a wall-clock time budget. Stops
-    early and reports exactly how many were actually completed if the
-    budget runs out -- never silently truncates without saying so.
+def discover_for_sample(
+    coin_rows,
+    enrichment_request_budget: int = 30,
+    enrichment_time_budget_seconds: float = 90.0,
+    discovery_time_budget_seconds: float = 180.0,
+    deadline: Optional[float] = None,
+    progress_every: int = 10,
+    progress_cb=None,
+) -> dict:
+    """Orchestrates the two separated phases for a coin sample:
+      A) enrich_missing_link_metadata -- bounded CoinGecko enrichment
+      B) discover_sources_from_cache -- cache-only, zero CoinGecko calls
+
+    `deadline` (a time.monotonic() value) is an optional hard ceiling
+    shared across a larger multi-phase run; both sub-phases stop the
+    instant it passes, regardless of their own budgets.
+    `progress_cb(processed, total, found, deferred, elapsed, remaining)`
+    is called every `progress_every` coins during phase B, if provided.
     """
     t0 = time.monotonic()
+    coin_ids = [row["coingecko_id"] if isinstance(row, dict) else row for row in coin_rows]
+
+    enrichment_summary = enrich_missing_link_metadata(
+        coin_ids,
+        request_budget=enrichment_request_budget,
+        time_budget_seconds=enrichment_time_budget_seconds,
+        deadline=deadline,
+    )
+
     per_coin = []
     budget_exceeded_after = None
-    for row in coin_rows:
-        if time.monotonic() - t0 > time_budget_seconds:
+    deferred_count = 0
+    for i, row in enumerate(coin_rows):
+        now = time.monotonic()
+        if (now - t0) > (enrichment_summary["elapsed_seconds"] + discovery_time_budget_seconds):
             budget_exceeded_after = len(per_coin)
             break
+        if deadline is not None and now > deadline:
+            budget_exceeded_after = len(per_coin)
+            break
+
         cid = row["coingecko_id"] if isinstance(row, dict) else row
         homepage = row.get("website", "") if isinstance(row, dict) else ""
-        per_coin.append(discover_official_sources_for_coin(cid, cached_homepage=homepage))
-        time.sleep(0.3)  # politeness delay for the non-CoinGecko requests
+        coin_result = discover_sources_from_cache(cid, cached_homepage=homepage)
+        per_coin.append(coin_result)
+        if "DEFERRED" in coin_result["github_status"]:
+            deferred_count += 1
+
+        if progress_cb and (i + 1) % progress_every == 0:
+            found_so_far = sum(
+                1 for r in per_coin
+                if r["homepage_reachable"] or r["blog_rss_found"] or r["github_feed_found"] or r["subreddit_feed_found"]
+            )
+            remaining_budget = None
+            if deadline is not None:
+                remaining_budget = max(0.0, deadline - time.monotonic())
+            progress_cb(i + 1, len(coin_rows), found_so_far, deferred_count, time.monotonic() - t0, remaining_budget)
+
+        time.sleep(0.2)  # politeness delay for the non-CoinGecko requests
 
     total = len(coin_rows)
     completed = len(per_coin)
@@ -244,18 +414,17 @@ def discover_for_sample(coin_rows, time_budget_seconds: float = 480.0) -> dict:
         1 for r in per_coin
         if r["homepage_reachable"] or r["blog_rss_found"] or r["github_feed_found"] or r["subreddit_feed_found"]
     )
-    only_x_known = sum(
-        1 for r in per_coin
-        if not (r["homepage_reachable"] or r["blog_rss_found"] or r["github_feed_found"] or r["subreddit_feed_found"])
-    )
+    only_x_known = completed - at_least_one_source
     return {
         "requested": total,
         "completed": completed,
         "stopped_early_due_to_time_budget": budget_exceeded_after is not None,
+        "enrichment": enrichment_summary,
         "homepage_coverage": sum(1 for r in per_coin if r["homepage_reachable"]),
         "blog_rss_coverage": sum(1 for r in per_coin if r["blog_rss_found"]),
         "github_coverage": sum(1 for r in per_coin if r["github_feed_found"]),
         "subreddit_coverage": sum(1 for r in per_coin if r["subreddit_feed_found"]),
+        "deferred_due_to_missing_metadata": deferred_count,
         "at_least_one_official_source": at_least_one_source,
         "only_x_known_or_nothing": only_x_known,
         "elapsed_seconds": time.monotonic() - t0,
