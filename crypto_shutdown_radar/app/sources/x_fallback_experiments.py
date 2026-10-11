@@ -38,6 +38,8 @@ import feedparser
 import requests
 
 from app.config import HTTP_TIMEOUT_SECONDS, USER_AGENT
+from app.db import get_conn
+from app.x_fallback_cooldown import is_in_cooldown, record_method_result, DEFAULT_COOLDOWN_HOURS
 
 log = logging.getLogger("x_fallback_experiments")
 
@@ -62,6 +64,7 @@ class MethodResult:
     cost: str
     tos_reliability_note: str
     account_results: dict = field(default_factory=dict)  # handle -> {ok, post_count, newest_ts, error}
+    skipped_cooldown_reason: Optional[str] = None
 
     @property
     def success_count(self):
@@ -111,6 +114,22 @@ def test_xcancel(handles: list, deadline: Optional[float] = None) -> MethodResul
     return result
 
 
+def test_one_nitter_mirror(base: str, handles: list, deadline: Optional[float] = None) -> MethodResult:
+    result = MethodResult(
+        method=f"Nitter-codebase mirror: {base}",
+        requires_auth=False,
+        requires_normal_account=False,
+        cost="free",
+        tos_reliability_note="Community-run Nitter instance; same legal/uptime risk as any Nitter mirror.",
+    )
+    for handle in handles:
+        if _deadline_hit(deadline):
+            break
+        result.account_results[handle] = _try_nitter_style_rss(base, handle)
+        time.sleep(1.5)
+    return result
+
+
 def test_extra_nitter_mirrors(handles: list, deadline: Optional[float] = None) -> dict:
     """Returns {mirror_base: MethodResult}, one per mirror, since each is a
     separately-operated instance with independent uptime.
@@ -119,19 +138,7 @@ def test_extra_nitter_mirrors(handles: list, deadline: Optional[float] = None) -
     for base in EXTRA_NITTER_MIRRORS:
         if _deadline_hit(deadline):
             break
-        result = MethodResult(
-            method=f"Nitter-codebase mirror: {base}",
-            requires_auth=False,
-            requires_normal_account=False,
-            cost="free",
-            tos_reliability_note="Community-run Nitter instance; same legal/uptime risk as any Nitter mirror.",
-        )
-        for handle in handles:
-            if _deadline_hit(deadline):
-                break
-            result.account_results[handle] = _try_nitter_style_rss(base, handle)
-            time.sleep(1.5)
-        out[base] = result
+        out[base] = test_one_nitter_mirror(base, handles, deadline=deadline)
     return out
 
 
@@ -217,7 +224,14 @@ def test_self_hosted_rss_bridge(handles: list, deadline: Optional[float] = None)
     return result
 
 
-def run_all_candidates(handles: list, deadline: Optional[float] = None) -> dict:
+_METHOD_RUNNERS = {
+    "xcancel": lambda handles, deadline: test_xcancel(handles, deadline=deadline),
+    "rsshub": lambda handles, deadline: test_rsshub(handles, deadline=deadline),
+}
+
+
+def run_all_candidates(handles: list, deadline: Optional[float] = None, use_cooldown: bool = True,
+                        cooldown_hours: float = DEFAULT_COOLDOWN_HOURS) -> dict:
     """Runs every candidate method against the same small handle list and
     returns a dict keyed by method name, each value a MethodResult (or None
     for the self-hosted RSS-Bridge candidate if it isn't configured).
@@ -227,10 +241,36 @@ def run_all_candidates(handles: list, deadline: Optional[float] = None) -> dict:
     (or per-mirror) request and stops immediately once it has passed,
     rather than running every remaining method/account to completion
     regardless of how long that takes.
+
+    Task 8: a method that failed last time is skipped (not re-tested) for
+    `cooldown_hours` -- it comes back as a MethodResult with
+    `skipped_cooldown_reason` set and no real requests made, instead of
+    hammering the same dead public mirror on every run. Pass
+    use_cooldown=False to force testing everything anyway (e.g. to
+    deliberately check if a method has recovered).
     """
-    out = {"xcancel": test_xcancel(handles, deadline=deadline)}
-    out.update({f"nitter_mirror:{k}": v for k, v in test_extra_nitter_mirrors(handles, deadline=deadline).items()})
-    out["rsshub"] = test_rsshub(handles, deadline=deadline)
+    def run_or_skip(method_key, runner):
+        if use_cooldown:
+            with get_conn() as conn:
+                reason = is_in_cooldown(conn, method_key, cooldown_hours)
+            if reason:
+                return MethodResult(
+                    method=f"{method_key} (SKIPPED: {reason})",
+                    requires_auth=False, requires_normal_account=False, cost="free",
+                    tos_reliability_note="Skipped this run due to cooldown after a recent failure.",
+                    skipped_cooldown_reason=reason,
+                )
+        result = runner(handles, deadline)
+        if use_cooldown:
+            with get_conn() as conn:
+                record_method_result(conn, method_key, result.success_count > 0)
+        return result
+
+    out = {"xcancel": run_or_skip("xcancel", _METHOD_RUNNERS["xcancel"])}
+    for base in EXTRA_NITTER_MIRRORS:
+        method_key = f"nitter_mirror:{base}"
+        out[method_key] = run_or_skip(method_key, lambda h, d, base=base: test_one_nitter_mirror(base, h, deadline=d))
+    out["rsshub"] = run_or_skip("rsshub", _METHOD_RUNNERS["rsshub"])
     rss_bridge = test_self_hosted_rss_bridge(handles, deadline=deadline)
     if rss_bridge is not None:
         out["self_hosted_rss_bridge"] = rss_bridge

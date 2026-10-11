@@ -74,10 +74,48 @@ CREATE TABLE IF NOT EXISTS official_sources (
     source_type TEXT NOT NULL,           -- homepage | rss_feed | github | subreddit | announcement_page | forum
     url TEXT NOT NULL,
     verification_status TEXT NOT NULL,   -- VERIFIED | UNVERIFIED
-    evidence TEXT NOT NULL,              -- provenance, e.g. 'coingecko_metadata:links.repos_url.github'
-    monitorable INTEGER DEFAULT 0,       -- 1 if this URL was confirmed to be a working, pollable feed/endpoint
+    evidence TEXT NOT NULL,              -- provenance: WHY it's considered official, e.g. 'coingecko_metadata:links.repos_url.github'
+    monitorable INTEGER DEFAULT 0,       -- 1 only if this is a changing publication/update stream we can poll -- NOT just "page exists" (see app.source_discovery.DIRECTLY_MONITORABLE_TYPES)
+    http_status INTEGER,                 -- the actual HTTP status observed when last checked, if any
+    discovery_method TEXT,               -- HOW the (would-be) feed was found, e.g. 'declared in homepage <link rel=alternate>'
     last_verified_at TEXT NOT NULL,
     UNIQUE(coingecko_id, source_type, url)
+);
+
+-- The exact, deterministic 100-project validation sample (see
+-- app.sample_selection), persisted so every re-run of the source-coverage
+-- validation uses the identical set of coins rather than a fresh,
+-- potentially-different sample each time.
+CREATE TABLE IF NOT EXISTS validation_sample (
+    sample_version TEXT NOT NULL,        -- e.g. 'v1' -- bump to intentionally rebuild
+    coingecko_id TEXT NOT NULL,
+    rank_at_selection INTEGER,
+    stratum TEXT NOT NULL,               -- '1-100' | '101-300' | '301-600' | '601-1000'
+    selected_at TEXT NOT NULL,
+    PRIMARY KEY (sample_version, coingecko_id)
+);
+
+-- Caches one historical price lookup (coin + specific calendar date) so a
+-- later run of the historical-event re-validation never re-queries a
+-- point it already successfully fetched, and a 429 on one date doesn't
+-- block the others.
+CREATE TABLE IF NOT EXISTS historical_price_cache (
+    coingecko_id TEXT NOT NULL,
+    date_ddmmyyyy TEXT NOT NULL,
+    status TEXT NOT NULL,                -- OK | RATE_LIMITED | ERROR | NOT_FOUND
+    price_usd REAL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (coingecko_id, date_ddmmyyyy)
+);
+
+-- Cooldown tracking for free X-fallback candidate methods (xcancel,
+-- Nitter mirrors, RSSHub, ...), so a validation run doesn't keep
+-- re-testing a method that just failed minutes/hours ago.
+CREATE TABLE IF NOT EXISTS x_fallback_method_health (
+    method_key TEXT PRIMARY KEY,
+    last_tested_at TEXT NOT NULL,
+    last_success INTEGER NOT NULL,       -- 1 | 0
+    consecutive_failures INTEGER DEFAULT 0
 );
 
 -- Per-account monitoring health/state, used by the scheduler to avoid
@@ -185,6 +223,12 @@ def _migrate(conn):
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(official_accounts)").fetchall()}
     if "last_verified_at" not in existing_cols:
         conn.execute("ALTER TABLE official_accounts ADD COLUMN last_verified_at TEXT")
+
+    source_cols = {row["name"] for row in conn.execute("PRAGMA table_info(official_sources)").fetchall()}
+    if "http_status" not in source_cols:
+        conn.execute("ALTER TABLE official_sources ADD COLUMN http_status INTEGER")
+    if "discovery_method" not in source_cols:
+        conn.execute("ALTER TABLE official_sources ADD COLUMN discovery_method TEXT")
 
 
 def now_iso() -> str:
