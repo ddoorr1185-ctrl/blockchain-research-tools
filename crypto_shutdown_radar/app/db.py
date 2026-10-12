@@ -140,8 +140,44 @@ CREATE TABLE IF NOT EXISTS project_audit_classification (
     coingecko_id TEXT PRIMARY KEY,
     raw_classification TEXT,             -- A | B | C | D, from the unaudited discovery pass
     audited_classification TEXT,         -- STRICT A | B | C | D
+    gold_classification TEXT,            -- GOLD A | B | C | D | UNRESOLVED (see app.shutdown_source_gold_audit) -- NULL until a GOLD pass has run for this project. Added alongside raw/audited, never overwriting them.
     resolved INTEGER DEFAULT 0,          -- 0 if this run left it UNRESOLVED (time budget)
     computed_at TEXT NOT NULL
+);
+
+-- GOLD-layer audit findings for a candidate page -- a SEPARATE table from
+-- shutdown_source_audit (the STRICT layer), for the same reason that one
+-- is separate from official_sources: so RAW / AUDITED(STRICT) / GOLD can
+-- all be compared side by side and none is ever silently overwritten by a
+-- later, stricter pass.
+CREATE TABLE IF NOT EXISTS gold_source_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coingecko_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    canonical_stream_url TEXT,
+    verdict TEXT NOT NULL,               -- GOLD_PASS | GOLD_DOWNGRADE | GOLD_UNRESOLVED
+    source_type TEXT,                    -- e.g. 'blog', 'press-releases', 'newsroom', 'docs' (always disqualifying), ...
+    audited_relevance TEXT,              -- HIGH | MEDIUM | LOW | NULL
+    evidence_mechanism TEXT,             -- RSS | JSON-LD | HTML_ARTICLE_CARDS | EMBEDDED_JSON | SITEMAP | OTHER | NULL
+    entry1_url TEXT, entry1_title TEXT, entry1_date TEXT,
+    entry2_url TEXT, entry2_title TEXT, entry2_date TEXT,
+    new_entry_detectable INTEGER DEFAULT 0,
+    entity_relationship TEXT,            -- VERIFIED | PLAUSIBLE | UNCLEAR
+    reason TEXT,
+    audited_at TEXT NOT NULL,
+    UNIQUE(coingecko_id, source_url)
+);
+
+-- Projects GOLD automation could not confidently resolve either way
+-- (can't tell a real publication stream from navigation/category pages).
+-- Never guessed into A/B/C/D -- left here for a human to look at.
+CREATE TABLE IF NOT EXISTS manual_review_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coingecko_id TEXT NOT NULL,
+    candidate_url TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    flagged_at TEXT NOT NULL,
+    UNIQUE(coingecko_id, candidate_url)
 );
 
 -- Cooldown tracking for free X-fallback candidate methods (xcancel,
@@ -267,6 +303,10 @@ def _migrate(conn):
         conn.execute("ALTER TABLE official_sources ADD COLUMN discovery_method TEXT")
     if "shutdown_relevance" not in source_cols:
         conn.execute("ALTER TABLE official_sources ADD COLUMN shutdown_relevance TEXT")
+
+    pac_cols = {row["name"] for row in conn.execute("PRAGMA table_info(project_audit_classification)").fetchall()}
+    if "gold_classification" not in pac_cols:
+        conn.execute("ALTER TABLE project_audit_classification ADD COLUMN gold_classification TEXT")
 
 
 def now_iso() -> str:

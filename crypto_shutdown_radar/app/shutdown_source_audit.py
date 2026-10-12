@@ -31,12 +31,18 @@ ALWAYS_DISQUALIFYING_SEGMENTS = {
     "legal", "terms", "term", "api-terms", "tos", "privacy", "cookie", "cookies",
     "signup", "sign-up", "register", "join", "newsletter", "subscribe",
     "careers", "jobs", "community",
+    # Task 2 (GOLD audit) hard blocks: docs/API surfaces can NEVER be a
+    # shutdown-announcement stream, wherever they sit in the path --
+    # e.g. bittensor.com/docs/query was wrongly counted as a listing
+    # because only the LEAF segment ("query") was checked against the
+    # old docs/documentation entry below, never the "docs" segment itself.
+    "docs", "documentation", "api", "apis", "api-reference", "reference", "query", "graphql", "sdk",
 }
 # Segments that only disqualify when they are the LEAF (final) path
 # segment -- e.g. a nested "/resources/docs" page is a docs page, but
 # "/docs/changelog" style directories are not blanket-banned by a prefix.
 LEAF_ONLY_DISQUALIFYING_SEGMENTS = {
-    "docs", "documentation", "faq", "press-kit", "media-kit", "brand", "branding", "about",
+    "faq", "press-kit", "media-kit", "brand", "branding", "about",
 }
 
 # Extra, bounded path variants for the deeper D-project pass (Task 5) --
