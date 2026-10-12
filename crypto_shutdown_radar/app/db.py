@@ -71,13 +71,14 @@ CREATE TABLE IF NOT EXISTS coin_link_metadata (
 CREATE TABLE IF NOT EXISTS official_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     coingecko_id TEXT NOT NULL,
-    source_type TEXT NOT NULL,           -- homepage | rss_feed | github | subreddit | announcement_page | forum
+    source_type TEXT NOT NULL,           -- homepage | rss_feed | github | subreddit | announcement_page | forum | first_party_page
     url TEXT NOT NULL,
     verification_status TEXT NOT NULL,   -- VERIFIED | UNVERIFIED
     evidence TEXT NOT NULL,              -- provenance: WHY it's considered official, e.g. 'coingecko_metadata:links.repos_url.github'
     monitorable INTEGER DEFAULT 0,       -- 1 only if this is a changing publication/update stream we can poll -- NOT just "page exists" (see app.source_discovery.DIRECTLY_MONITORABLE_TYPES)
     http_status INTEGER,                 -- the actual HTTP status observed when last checked, if any
     discovery_method TEXT,               -- HOW the (would-be) feed was found, e.g. 'declared in homepage <link rel=alternate>'
+    shutdown_relevance TEXT,             -- HIGH | MEDIUM | LOW -- how plausible this source is to publish a shutdown/wind-down/bankruptcy announcement (see app.shutdown_source_discovery). NULL for source types this doesn't apply to.
     last_verified_at TEXT NOT NULL,
     UNIQUE(coingecko_id, source_type, url)
 );
@@ -229,6 +230,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE official_sources ADD COLUMN http_status INTEGER")
     if "discovery_method" not in source_cols:
         conn.execute("ALTER TABLE official_sources ADD COLUMN discovery_method TEXT")
+    if "shutdown_relevance" not in source_cols:
+        conn.execute("ALTER TABLE official_sources ADD COLUMN shutdown_relevance TEXT")
 
 
 def now_iso() -> str:

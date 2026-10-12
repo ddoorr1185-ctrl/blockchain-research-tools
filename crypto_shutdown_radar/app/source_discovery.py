@@ -95,7 +95,7 @@ def first_link(stored: Optional[str]) -> Optional[str]:
 
 
 def record_source(conn, coingecko_id, source_type, url, status, evidence, monitorable=False,
-                   http_status=None, discovery_method=None):
+                   http_status=None, discovery_method=None, shutdown_relevance=None):
     """`evidence` is provenance (WHY this URL is considered official).
     `discovery_method` is HOW a monitorable feed was actually found (e.g.
     "declared in homepage <link rel=alternate>"), kept separate so neither
@@ -103,21 +103,25 @@ def record_source(conn, coingecko_id, source_type, url, status, evidence, monito
     changing publication/update stream we can poll -- see
     DIRECTLY_MONITORABLE_TYPES and is_directly_monitorable() below. A bare
     reachable homepage is reported (verification_status) but is NEVER
-    monitorable=True on its own.
+    monitorable=True on its own. `shutdown_relevance` (HIGH/MEDIUM/LOW) is
+    set by app.shutdown_source_discovery for first_party_page/github/
+    subreddit rows; left None for types it doesn't apply to.
     """
     conn.execute(
         """
-        INSERT INTO official_sources (coingecko_id, source_type, url, verification_status, evidence, monitorable, http_status, discovery_method, last_verified_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO official_sources (coingecko_id, source_type, url, verification_status, evidence, monitorable, http_status, discovery_method, shutdown_relevance, last_verified_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(coingecko_id, source_type, url) DO UPDATE SET
             verification_status=excluded.verification_status,
             evidence=excluded.evidence,
             monitorable=excluded.monitorable,
             http_status=excluded.http_status,
             discovery_method=excluded.discovery_method,
+            shutdown_relevance=excluded.shutdown_relevance,
             last_verified_at=excluded.last_verified_at
         """,
-        (coingecko_id, source_type, url, status, evidence, 1 if monitorable else 0, http_status, discovery_method, now_iso()),
+        (coingecko_id, source_type, url, status, evidence, 1 if monitorable else 0, http_status, discovery_method,
+         shutdown_relevance, now_iso()),
     )
 
 
