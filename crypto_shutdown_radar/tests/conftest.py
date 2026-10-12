@@ -24,6 +24,7 @@ def clean_tables():
             "source_health", "scheduler_state",
             "official_sources", "coin_link_metadata", "validation_sample",
             "historical_price_cache", "x_fallback_method_health",
+            "shutdown_source_audit", "project_audit_classification",
         ]:
             conn.execute(f"DELETE FROM {table}")
     yield

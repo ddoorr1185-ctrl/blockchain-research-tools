@@ -109,6 +109,41 @@ CREATE TABLE IF NOT EXISTS historical_price_cache (
     PRIMARY KEY (coingecko_id, date_ddmmyyyy)
 );
 
+-- Audit findings for a candidate first-party page (see
+-- app.shutdown_source_audit). Deliberately a SEPARATE table from
+-- official_sources: the raw discovery row (and its shutdown_relevance/
+-- monitorable flags from the un-audited pass) is never overwritten, so
+-- RAW_DISCOVERY_CLASSIFICATION vs AUDITED_CLASSIFICATION can both be
+-- shown and compared (Task 9).
+CREATE TABLE IF NOT EXISTS shutdown_source_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    coingecko_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,            -- the candidate URL being audited (may be an individual article)
+    canonical_stream_url TEXT,           -- the listing/stream actually counted -- may be source_url itself, or a resolved parent
+    verdict TEXT NOT NULL,               -- PASS | DOWNGRADE | UNRESOLVED
+    audited_relevance TEXT,              -- HIGH | MEDIUM | LOW | NULL (NULL when verdict != PASS)
+    entry1_url TEXT, entry1_title TEXT, entry1_date TEXT,
+    entry2_url TEXT, entry2_title TEXT, entry2_date TEXT,
+    stable_identifier_available INTEGER DEFAULT 0,
+    can_detect_new_entry INTEGER DEFAULT 0,
+    entity_relationship TEXT,            -- VERIFIED | PLAUSIBLE | UNCLEAR
+    reason TEXT,
+    audited_at TEXT NOT NULL,
+    UNIQUE(coingecko_id, source_url)
+);
+
+-- One row per sampled project: the RAW (unaudited) classification next to
+-- the AUDITED (strict) one, so the false-positive rate among the
+-- original A/B result is directly computable without recomputing
+-- anything from scratch.
+CREATE TABLE IF NOT EXISTS project_audit_classification (
+    coingecko_id TEXT PRIMARY KEY,
+    raw_classification TEXT,             -- A | B | C | D, from the unaudited discovery pass
+    audited_classification TEXT,         -- STRICT A | B | C | D
+    resolved INTEGER DEFAULT 0,          -- 0 if this run left it UNRESOLVED (time budget)
+    computed_at TEXT NOT NULL
+);
+
 -- Cooldown tracking for free X-fallback candidate methods (xcancel,
 -- Nitter mirrors, RSSHub, ...), so a validation run doesn't keep
 -- re-testing a method that just failed minutes/hours ago.
